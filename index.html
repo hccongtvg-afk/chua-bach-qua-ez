@@ -137,6 +137,9 @@ button{cursor:pointer}
       <ul id="roster" hidden></ul>
     </div>
     <div class="tools">
+      <button id="musicBtn" class="icon-btn" type="button" aria-pressed="true" aria-label="Tắt nhạc">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/><path id="musicSlash" d="M4 4l16 16" style="display:none"/></svg>
+      </button>
       <button id="soundBtn" class="icon-btn" type="button" aria-pressed="true" aria-label="Tắt âm thanh">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z"/><path id="waves" d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>
       </button>
@@ -683,49 +686,131 @@ const sfx={
 };
 let nextChime=8;
 
-/* meditation music: a slow drone, soft breath and pentatonic bells, all generated here */
-const zen={on:false,bus:null,srcs:[],next:0,bowlNext:0};
-const ZEN_NOTES=[293.66,329.63,369.99,440,493.88,587.33,659.25,739.99];
-function zenStart(){
-  if(zen.on||!soundOn||!ensureAudio())return;
-  zen.on=true;const t=actx.currentTime;
-  const bus=actx.createGain();bus.gain.setValueAtTime(0.0001,t);bus.gain.exponentialRampToValueAtTime(0.9,t+5);bus.connect(master);
-  const lp=actx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=950;lp.connect(bus);
-  const srcs=[];
-  [[73.42,'sine',0.07],[110,'triangle',0.03],[146.83,'sine',0.025],[220.5,'sine',0.01]].forEach(([f,type,amp],i)=>{
-    const o=actx.createOscillator();o.type=type;o.frequency.value=f;o.detune.value=(i%2?5:-4);
-    const g=actx.createGain();g.gain.value=amp;
-    const lfo=actx.createOscillator();lfo.frequency.value=0.05+i*0.027;const lg=actx.createGain();lg.gain.value=amp*0.55;
-    lfo.connect(lg);lg.connect(g.gain);o.connect(g);g.connect(lp);o.start(t);lfo.start(t);srcs.push(o,lfo);
-  });
-  const len=actx.sampleRate*4,buf=actx.createBuffer(1,len,actx.sampleRate),d=buf.getChannelData(0);
-  let last=0;for(let i=0;i<len;i++){last=(last+0.02*(Math.random()*2-1))/1.02;d[i]=last*3.2;}
-  const nz=actx.createBufferSource();nz.buffer=buf;nz.loop=true;
-  const nf=actx.createBiquadFilter();nf.type='lowpass';nf.frequency.value=420;
-  const ng=actx.createGain();ng.gain.value=0.05;
-  const nl=actx.createOscillator();nl.frequency.value=0.09;const nlg=actx.createGain();nlg.gain.value=0.04;
-  nl.connect(nlg);nlg.connect(ng.gain);nz.connect(nf);nf.connect(ng);ng.connect(bus);nz.start(t);nl.start(t);srcs.push(nz,nl);
-  zen.bus=bus;zen.srcs=srcs;zen.next=t+2.5;zen.bowlNext=t+1;
-  const n=document.getElementById('zenNote');if(n)n.hidden=false;
+/* ---------- music: temple music while you are inside, meditation music while you sit ----------
+   Generated here (no recordings to license). On the self-hosted site, nhac-chua.mp3 / nhac-thien.mp3
+   placed next to server.js replace the generated pieces. */
+let musicOn=store.get('cbq.music')!=='off';
+const N={C3:130.81,G3:196,A3:220,C4:261.63,D4:293.66,F4:349.23,G4:392,A4:440,C5:523.25,D5:587.33,F5:698.46,G5:783.99,A5:880,C6:1046.5};
+// đàn tranh phrases in the northern pentatonic (C D F G A); [note, beats]
+const TRANH=[
+  [['G4',1],['A4',.5],['C5',.5],['A4',1],['G4',1],['F4',.5],['G4',.5],['D4',2]],
+  [['C4',1],['D4',.5],['F4',.5],['G4',1],['A4',1],['G4',.5],['F4',.5],['G4',2]],
+  [['C5',1],['A4',.5],['G4',.5],['A4',1],['C5',.5],['D5',.5],['C5',1],['A4',1],['G4',2]],
+  [['F4',1],['G4',.5],['A4',.5],['G4',1],['F4',.5],['D4',.5],['C4',3],[null,1]],
+  [['A4',1.5],['G4',.5],['A4',1],['C5',1],['D5',1],['C5',.5],['A4',.5],['G4',2]],
+  [['F4',1],['D4',1],['F4',.5],['G4',.5],['A4',1],['G4',1],['F4',1],['C4',3],[null,1]]
+];
+// sáo trúc phrases, slow and breathing
+const SAO=[
+  [['A4',3],['G4',1],['A4',2],['C5',2],['A4',4],[null,2]],
+  [['G4',2],['F4',1],['G4',1],['A4',2],['G4',2],['D4',4],[null,2]],
+  [['C4',2],['D4',2],['F4',2],['G4',1],['F4',1],['D4',4],[null,3]],
+  [['D4',2],['F4',2],['G4',3],['A4',1],['G4',4],[null,4]]
+];
+function pluck(f,when,amp,dest,slide){
+  const o1=actx.createOscillator(),o2=actx.createOscillator(),lp=actx.createBiquadFilter(),g=actx.createGain();
+  o1.type='triangle';o2.type='sawtooth';o2.detune.value=6;
+  const f0=slide?f*0.94:f;
+  [o1,o2].forEach(o=>{o.frequency.setValueAtTime(f0,when);if(slide)o.frequency.exponentialRampToValueAtTime(f,when+0.14);});
+  lp.type='lowpass';lp.Q.value=2;lp.frequency.setValueAtTime(3200,when);lp.frequency.exponentialRampToValueAtTime(700,when+0.5);
+  const g2=actx.createGain();g2.gain.value=0.25;
+  g.gain.setValueAtTime(0.0001,when);g.gain.linearRampToValueAtTime(amp,when+0.004);g.gain.exponentialRampToValueAtTime(0.0001,when+1.9);
+  o1.connect(lp);o2.connect(g2);g2.connect(lp);lp.connect(g);g.connect(dest);
+  o1.start(when);o2.start(when);o1.stop(when+2);o2.stop(when+2);
 }
-function zenStop(){
-  if(!zen.on)return;zen.on=false;
-  const n=document.getElementById('zenNote');if(n)n.hidden=true;
-  if(!actx||!zen.bus)return;const t=actx.currentTime;
-  zen.bus.gain.cancelScheduledValues(t);zen.bus.gain.setValueAtTime(Math.max(0.0001,zen.bus.gain.value),t);zen.bus.gain.exponentialRampToValueAtTime(0.0001,t+3);
-  zen.srcs.forEach(s=>{try{s.stop(t+3.1);}catch(e){}});zen.bus=null;zen.srcs=[];
+function flute(f,when,dur,amp,dest){
+  const o=actx.createOscillator(),o2=actx.createOscillator(),g=actx.createGain(),vib=actx.createOscillator(),vg=actx.createGain();
+  o.type='sine';o2.type='triangle';o.frequency.value=f;o2.frequency.value=f*2;
+  vib.frequency.value=5.2;vg.gain.setValueAtTime(0,when);vg.gain.linearRampToValueAtTime(f*0.006,when+Math.min(0.6,dur*0.5));
+  vib.connect(vg);vg.connect(o.frequency);vg.connect(o2.frequency);
+  const g2=actx.createGain();g2.gain.value=0.12;
+  const rel=Math.min(0.6,dur*0.4);
+  g.gain.setValueAtTime(0.0001,when);g.gain.linearRampToValueAtTime(amp,when+0.25);g.gain.setValueAtTime(amp,when+dur-rel);g.gain.exponentialRampToValueAtTime(0.0001,when+dur+0.2);
+  o.connect(g);o2.connect(g2);g2.connect(g);g.connect(dest);
+  // breath
+  const len=Math.floor(actx.sampleRate*0.4),buf=actx.createBuffer(1,len,actx.sampleRate),d=buf.getChannelData(0);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*(1-i/len);
+  const nz=actx.createBufferSource();nz.buffer=buf;const bp=actx.createBiquadFilter();bp.type='bandpass';bp.frequency.value=f*2;bp.Q.value=4;const ng=actx.createGain();ng.gain.value=amp*0.5;
+  nz.connect(bp);bp.connect(ng);ng.connect(dest);nz.start(when);
+  [o,o2,vib].forEach(x=>{x.start(when);x.stop(when+dur+0.3);});
 }
-function zenTick(){
-  if(!zen.on||!actx||!zen.bus)return;const t=actx.currentTime;
-  if(t>=zen.next){
-    const f=ZEN_NOTES[Math.floor(Math.random()*ZEN_NOTES.length)];
-    tone(f,0.045,5,t+0.05,'sine',zen.bus);tone(f*2.01,0.012,2.5,t+0.05,'sine',zen.bus);tone(f*0.5,0.02,4,t+0.05,'sine',zen.bus);
-    if(Math.random()<0.45){const f2=ZEN_NOTES[Math.floor(Math.random()*ZEN_NOTES.length)];tone(f2,0.03,4.5,t+0.7+Math.random()*0.6,'sine',zen.bus);}
-    zen.next=t+3.2+Math.random()*4.5;
+function bowlTo(dest,when,amp){[[1,1,6],[2.71,.3,3.5],[5.15,.1,2]].forEach(([r,a,dd])=>tone(196*r,a*amp,dd,when,'sine',dest));}
+function makeDrone(dest,notes,amp){
+  const srcs=[];const t=actx.currentTime;
+  notes.forEach((f,i)=>{const o=actx.createOscillator();o.type='sine';o.frequency.value=f;o.detune.value=i%2?4:-3;
+    const g=actx.createGain();g.gain.value=amp/(i+1);const l=actx.createOscillator();l.frequency.value=0.06+i*0.03;const lg=actx.createGain();lg.gain.value=amp/(i+1)*0.5;
+    l.connect(lg);lg.connect(g.gain);o.connect(g);g.connect(dest);o.start(t);l.start(t);srcs.push(o,l);});
+  return srcs;
+}
+const fileTracks={chua:null,thien:null};
+async function probeTracks(){
+  if(!window.CBQ_SERVER)return;
+  for(const k of ['chua','thien']){
+    try{const r=await fetch('/nhac-'+k+'.mp3',{method:'HEAD',cache:'no-store'});
+      if(r.ok){const a=new Audio('/nhac-'+k+'.mp3');a.loop=true;a.preload='auto';a.volume=0;fileTracks[k]=a;}}catch(e){}
   }
-  if(t>=zen.bowlNext){[[1,1,6],[2.71,.3,3.5],[5.15,.1,2]].forEach(([r,a,dd])=>tone(196*r,a*0.07,dd,t+0.05,'sine',zen.bus));zen.bowlNext=t+18+Math.random()*10;}
 }
-
+probeTracks();
+const music={mode:null,bus:null,srcs:[],next:0,phrase:0,step:0,beat:0,bell:0,file:null,fade:null};
+function musicWanted(){
+  if(!entered||!soundOn||!musicOn)return null;
+  return me&&me.act&&me.act.a==='thien'?'thien':'chua';
+}
+function musicStopCurrent(){
+  if(music.file){const a=music.file;fadeAudio(a,0,1200,()=>a.pause());music.file=null;}
+  if(music.bus&&actx){const t=actx.currentTime,b=music.bus;b.gain.cancelScheduledValues(t);b.gain.setValueAtTime(Math.max(0.0001,b.gain.value),t);b.gain.exponentialRampToValueAtTime(0.0001,t+2.5);
+    music.srcs.forEach(x=>{try{x.stop(t+2.6);}catch(e){}});setTimeout(()=>{try{b.disconnect();}catch(e){}},3000);}
+  music.bus=null;music.srcs=[];
+}
+function fadeAudio(a,to,ms,done){const from=a.volume,t0=performance.now();const stepF=()=>{const k=Math.min(1,(performance.now()-t0)/ms);a.volume=from+(to-from)*k;if(k<1)requestAnimationFrame(stepF);else if(done)done();};stepF();}
+function musicStart(mode){
+  const note=document.getElementById('zenNote');if(note)note.hidden=mode!=='thien';
+  if(!mode)return;
+  if(fileTracks[mode]){const a=fileTracks[mode];a.currentTime=0;const p=a.play();if(p&&p.catch)p.catch(()=>{});fadeAudio(a,mode==='thien'?0.9:0.5,2500);music.file=a;return;}
+  if(!ensureAudio())return;
+  const t=actx.currentTime;const bus=actx.createGain();
+  bus.gain.setValueAtTime(0.0001,t);bus.gain.exponentialRampToValueAtTime(mode==='thien'?1:0.55,t+4);
+  const verbIn=actx.createGain(),dl=actx.createDelay(1.2),fb=actx.createGain(),dlp=actx.createBiquadFilter();
+  dl.delayTime.value=mode==='thien'?0.42:0.31;fb.gain.value=0.33;dlp.type='lowpass';dlp.frequency.value=1800;
+  verbIn.connect(bus);verbIn.connect(dl);dl.connect(dlp);dlp.connect(fb);fb.connect(dl);dlp.connect(bus);
+  bus.connect(master);
+  music.bus=verbIn;music.out=bus;
+  music.srcs=makeDrone(verbIn,mode==='thien'?[N.C3,N.G3,N.C4]:[N.C3,N.G3],mode==='thien'?0.05:0.022);
+  music.next=t+1.2;music.phrase=Math.floor(Math.random()*(mode==='thien'?SAO:TRANH).length);music.step=0;music.beat=0;music.bell=t+(mode==='thien'?1:6);
+  const out=bus;music.srcs.push({stop:(w)=>{out.gain.cancelScheduledValues(actx.currentTime);out.gain.setValueAtTime(Math.max(0.0001,out.gain.value),actx.currentTime);out.gain.exponentialRampToValueAtTime(0.0001,w);setTimeout(()=>{try{out.disconnect();}catch(e){}},(w-actx.currentTime)*1000+500);}});
+}
+function musicTick(){
+  if(!music.bus||!actx||music.file)return;
+  const ahead=actx.currentTime+0.35;
+  while(music.next<ahead){
+    if(music.mode==='chua'){
+      const ph=TRANH[music.phrase],[n,b]=ph[music.step],beat=0.72;
+      if(n){
+        const f=N[n],amp=0.16;
+        if(music.step===0)pluck(N.C3,music.next,0.09,music.bus,false);
+        if(b>=2){for(let k=0;k<Math.floor(b*5);k++)pluck(f,music.next+k*0.14,amp*Math.pow(0.82,k),music.bus,false);} // vê: tremolo on long notes
+        else pluck(f,music.next,amp,music.bus,Math.random()<0.3);
+      }
+      music.next+=b*beat;music.beat+=b;
+    }else{
+      const ph=SAO[music.phrase],[n,b]=ph[music.step],beat=1.1;
+      if(n)flute(N[n],music.next,b*beat*0.96,0.07,music.bus);
+      music.next+=b*beat;
+    }
+    music.step++;
+    const list=music.mode==='chua'?TRANH:SAO;
+    if(music.step>=list[music.phrase].length){music.step=0;music.phrase=(music.phrase+1+(Math.random()<0.3?1:0))%list.length;}
+  }
+  const t=actx.currentTime;
+  if(t>=music.bell){
+    if(music.mode==='thien'){bowlTo(music.bus,t+0.05,0.08);music.bell=t+18+Math.random()*8;}
+    else{tone(N.C6,0.02,3,t+0.05,'sine',music.bus);tone(N.C6*2.76,0.006,1.4,t+0.05,'sine',music.bus);music.bell=t+11+Math.random()*7;}
+  }
+}
+function updateMusic(){
+  const w=musicWanted();
+  if(w!==music.mode){musicStopCurrent();music.mode=w;musicStart(w);}
+  musicTick();
+}
 /* ---------- monks ---------- */
 const skin=m('skin',0xF4D6BC,{roughness:.7}),cheekMat=m('cheek',0xF2A9B4,{roughness:.8}),eyeMat=m('eye',0x3B2A3F,{roughness:.6}),moMat=m('mo',0x8E5634,{roughness:.6}),stickMat=m('stick',0x9C3B3B);
 const robeMats=ROBES.map((r,i)=>m('robe'+i,r.robe,{roughness:.75})),sashMats=ROBES.map((r,i)=>m('sash'+i,r.sash,{roughness:.6}));
@@ -974,13 +1059,17 @@ document.getElementById('chatForm').addEventListener('submit',e=>{
   if(!msg||!entered)return;inp.value='';inp.blur();
   showBubble(me,msg);logMsg(myName,msg,myColor);send({m:msg,mt:Date.now()});
 });
-document.querySelectorAll('.act').forEach(b=>b.addEventListener('click',()=>{ensureAudio();doAction(b.dataset.act);}));
+document.querySelectorAll('.act').forEach(b=>b.addEventListener('click',()=>{ensureAudio();doAction(b.dataset.act);updateMusic();}));
 
 /* ---------- sound toggle ---------- */
 const soundBtn=document.getElementById('soundBtn');
 function paintSound(){soundBtn.setAttribute('aria-pressed',String(soundOn));soundBtn.setAttribute('aria-label',soundOn?'Tắt âm thanh':'Bật âm thanh');document.getElementById('waves').style.display=soundOn?'':'none';}
-soundBtn.addEventListener('click',()=>{soundOn=!soundOn;store.set('cbq.sound',soundOn?'on':'off');paintSound();if(soundOn){ensureAudio();sfx.chime(0.8);}});
+soundBtn.addEventListener('click',()=>{soundOn=!soundOn;store.set('cbq.sound',soundOn?'on':'off');paintSound();if(soundOn){ensureAudio();sfx.chime(0.8);}updateMusic();});
 paintSound();
+const musicBtn=document.getElementById('musicBtn');
+function paintMusic(){musicBtn.setAttribute('aria-pressed',String(musicOn));musicBtn.setAttribute('aria-label',musicOn?'Tắt nhạc':'Bật nhạc');document.getElementById('musicSlash').style.display=musicOn?'none':'';}
+musicBtn.addEventListener('click',()=>{musicOn=!musicOn;store.set('cbq.music',musicOn?'on':'off');paintMusic();ensureAudio();updateMusic();});
+paintMusic();
 document.getElementById('who').addEventListener('click',()=>{const ul=document.getElementById('roster'),btn=document.getElementById('who');ul.hidden=!ul.hidden;btn.setAttribute('aria-expanded',String(!ul.hidden));});
 document.getElementById('rotL').addEventListener('click',()=>{yawTarget-=Math.PI/4;});
 document.getElementById('rotR').addEventListener('click',()=>{yawTarget+=Math.PI/4;});
@@ -1007,7 +1096,7 @@ document.getElementById('rotR').addEventListener('click',()=>{yawTarget+=Math.PI
     document.getElementById('gate').hidden=true;document.getElementById('hud').hidden=false;
     logSys('Chào '+myName+', bạn đã vào Chùa Bạch Quả');
     sfx.bell(0.7);bellTower.swing=1;bellTower.ringT=0;
-    sendFull();setWho();
+    sendFull();setWho();updateMusic();
     setTimeout(()=>document.getElementById('hint').classList.add('gone'),9000);
   });
 })();
@@ -1145,11 +1234,8 @@ function step(now){
   if(Math.random()<dt*(2.2+burner.glow*10)){const t=burner.tips[Math.floor(Math.random()*3)];puff(t.position.x,t.position.y+0.05,t.position.z,0.22+burner.glow*0.15);}
   updateSmoke(dt);updateLeaves(dt,elapsed);
   if(marker.material.opacity>0){if(!target.on)marker.material.opacity*=Math.exp(-dt*6);marker.scale.setScalar(1+0.1*Math.sin(elapsed*6));}
-  const meditating=entered&&me&&me.act&&me.act.a==='thien';
-  if(meditating&&soundOn&&!zen.on)zenStart();
-  if(zen.on&&(!meditating||!soundOn))zenStop();
-  zenTick();
-  if(entered&&soundOn&&actx&&!meditating){nextChime-=dt;if(nextChime<=0){nextChime=10+Math.random()*10;sfx.chime(0.45);}}
+  updateMusic();
+  if(entered&&soundOn&&!musicOn&&actx){nextChime-=dt;if(nextChime<=0){nextChime=10+Math.random()*10;sfx.chime(0.45);}}
   renderer.render(scene,camera);
   requestAnimationFrame(step);
 }

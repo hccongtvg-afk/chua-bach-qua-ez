@@ -10,14 +10,38 @@ const MAX_PLAYERS = 80;
 const pagePath = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find((p) => fs.existsSync(p));
 const page = fs.readFileSync(pagePath);
 
+// optional music files: drop nhac-chua.mp3 / nhac-thien.mp3 next to this file (or in public/)
+const MUSIC = ['nhac-chua.mp3', 'nhac-thien.mp3'];
+function findFile(name) {
+  return [path.join(__dirname, name), path.join(__dirname, 'public', name)].find((p) => fs.existsSync(p));
+}
+function sendAudio(req, res, file) {
+  const size = fs.statSync(file).size;
+  const head = { 'Content-Type': 'audio/mpeg', 'Accept-Ranges': 'bytes', 'Cache-Control': 'public, max-age=3600' };
+  const m = /bytes=(\d*)-(\d*)/.exec(req.headers.range || '');
+  if (m) {
+    const start = m[1] ? parseInt(m[1], 10) : 0;
+    const end = m[2] ? Math.min(parseInt(m[2], 10), size - 1) : size - 1;
+    if (start >= size || start > end) { res.writeHead(416, { 'Content-Range': 'bytes */' + size }); return res.end(); }
+    res.writeHead(206, Object.assign(head, { 'Content-Length': end - start + 1, 'Content-Range': 'bytes ' + start + '-' + end + '/' + size }));
+    if (req.method === 'HEAD') return res.end();
+    return fs.createReadStream(file, { start, end }).pipe(res);
+  }
+  res.writeHead(200, Object.assign(head, { 'Content-Length': size }));
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(file).pipe(res);
+}
+
 const server = http.createServer((req, res) => {
   const url = (req.url || '/').split('?')[0];
   if (url === '/' || url === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
-    res.end(page);
+    res.end(req.method === 'HEAD' ? undefined : page);
   } else if (url === '/healthz') {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('ok');
+  } else if (MUSIC.includes(url.slice(1)) && findFile(url.slice(1))) {
+    sendAudio(req, res, findFile(url.slice(1)));
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Không tìm thấy trang');
