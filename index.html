@@ -93,6 +93,12 @@ button{cursor:pointer}
 .hint.gone{opacity:0}
 .hint.zen{background:var(--plum);color:var(--gold-soft);border-color:transparent}
 
+/* YouTube mini player, shown only while its track plays */
+.yt{position:fixed;z-index:3;right:max(16px,env(safe-area-inset-right,0px));bottom:calc(env(safe-area-inset-bottom,0px) + 190px);width:256px;padding:8px;display:grid;gap:6px}
+.yt-h{font-size:12px;line-height:1.35;color:var(--plum);font-weight:500;overflow-wrap:anywhere}
+.yt-frame{width:240px;height:200px;border-radius:10px;overflow:hidden;background:#1d1426}
+.yt-frame iframe{width:100%;height:100%;border:0;display:block}
+@media (max-width:520px){.yt{top:calc(env(safe-area-inset-top,0px) + 120px);bottom:auto;width:216px}.yt-frame{width:200px;height:200px}}
 /* entry gate */
 .gate{position:fixed;inset:0;display:grid;place-items:center;background:linear-gradient(180deg,rgba(243,236,247,.25),rgba(74,46,99,.35));
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:16px;z-index:5}
@@ -184,6 +190,11 @@ button{cursor:pointer}
       </button>
     </div>
   </div>
+</div>
+
+<div id="ytCard" class="yt card" hidden>
+  <div class="yt-h">♪ <span id="ytLabel"></span></div>
+  <div class="yt-frame"><div id="ytPlayer"></div></div>
 </div>
 
 <div id="gate" class="gate">
@@ -750,12 +761,39 @@ async function probeTracks(){
   }
 }
 probeTracks();
+/* YouTube track for meditation (self-hosted site only: the Claude page cannot embed other sites) */
+const YT_TRACKS={thien:{id:'DUnPi83ZO4E',label:'Nhạc Thiền Tâm An Lạc #4 · kênh Thiền An Chữa Lành'}};
+const yt={player:null,ready:false,failed:false,want:false,loading:false,cbs:[]};
+function ytUsable(mode){return !!window.CBQ_SERVER&&!yt.failed&&!!YT_TRACKS[mode];}
+function ytFail(){yt.failed=true;yt.want=false;const c=document.getElementById('ytCard');if(c)c.hidden=true;music.mode=null;}
+function ytLoadApi(cb){
+  if(window.YT&&window.YT.Player){cb();return;}
+  yt.cbs.push(cb);
+  if(yt.loading)return;yt.loading=true;
+  const prev=window.onYouTubeIframeAPIReady;
+  window.onYouTubeIframeAPIReady=()=>{if(typeof prev==='function')prev();const l=yt.cbs.splice(0);l.forEach(f=>f());};
+  const sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';sc.async=true;sc.onerror=ytFail;document.head.appendChild(sc);
+  setTimeout(()=>{if(!(window.YT&&window.YT.Player))ytFail();},12000);
+}
+function ytPlay(mode){
+  const tr=YT_TRACKS[mode];yt.want=true;
+  const card=document.getElementById('ytCard');card.hidden=false;document.getElementById('ytLabel').textContent=tr.label;
+  if(yt.player){if(yt.ready){yt.player.setVolume(65);yt.player.playVideo();}return;}
+  ytLoadApi(()=>{
+    if(yt.player||yt.failed)return;
+    yt.player=new window.YT.Player('ytPlayer',{width:'100%',height:'100%',videoId:tr.id,
+      playerVars:{autoplay:1,controls:1,playsinline:1,rel:0,loop:1,playlist:tr.id},
+      events:{onReady:e=>{yt.ready=true;e.target.setVolume(65);if(yt.want)e.target.playVideo();else e.target.pauseVideo();},onError:ytFail}});
+  });
+}
+function ytPause(){yt.want=false;const c=document.getElementById('ytCard');if(c)c.hidden=true;if(yt.player&&yt.ready){try{yt.player.pauseVideo();}catch(e){}}}
 const music={mode:null,bus:null,srcs:[],next:0,phrase:0,step:0,beat:0,bell:0,file:null,fade:null};
 function musicWanted(){
   if(!entered||!soundOn||!musicOn)return null;
   return me&&me.act&&me.act.a==='thien'?'thien':'chua';
 }
 function musicStopCurrent(){
+  if(music.yt){ytPause();music.yt=false;}
   if(music.file){const a=music.file;fadeAudio(a,0,1200,()=>a.pause());music.file=null;}
   if(music.bus&&actx){const t=actx.currentTime,b=music.bus;b.gain.cancelScheduledValues(t);b.gain.setValueAtTime(Math.max(0.0001,b.gain.value),t);b.gain.exponentialRampToValueAtTime(0.0001,t+2.5);
     music.srcs.forEach(x=>{try{x.stop(t+2.6);}catch(e){}});setTimeout(()=>{try{b.disconnect();}catch(e){}},3000);}
@@ -765,6 +803,7 @@ function fadeAudio(a,to,ms,done){const from=a.volume,t0=performance.now();const 
 function musicStart(mode){
   const note=document.getElementById('zenNote');if(note)note.hidden=mode!=='thien';
   if(!mode)return;
+  if(!fileTracks[mode]&&ytUsable(mode)){ytPlay(mode);music.yt=true;return;}
   if(fileTracks[mode]){const a=fileTracks[mode];a.currentTime=0;const p=a.play();if(p&&p.catch)p.catch(()=>{});fadeAudio(a,mode==='thien'?0.9:0.5,2500);music.file=a;return;}
   if(!ensureAudio())return;
   const t=actx.currentTime;const bus=actx.createGain();
