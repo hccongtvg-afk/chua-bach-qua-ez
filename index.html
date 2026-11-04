@@ -91,6 +91,7 @@ button{cursor:pointer}
 .cam{display:flex;flex-direction:column;gap:8px}
 .hint{font-size:12px;color:var(--plum);text-align:center;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 12px;align-self:center;transition:opacity 1s}
 .hint.gone{opacity:0}
+.hint.zen{background:var(--plum);color:var(--gold-soft);border-color:transparent}
 
 /* entry gate */
 .gate{position:fixed;inset:0;display:grid;place-items:center;background:linear-gradient(180deg,rgba(243,236,247,.25),rgba(74,46,99,.35));
@@ -144,6 +145,7 @@ button{cursor:pointer}
   <ol id="log" aria-live="polite"></ol>
   <div class="bottom">
     <div class="dock">
+      <div id="zenNote" class="hint zen" hidden>Đang phát nhạc thiền · bấm Ngồi thiền lần nữa hoặc đi để đứng dậy</div>
       <div id="hint" class="hint">Bấm vào mặt đất để đi · bấm vào chánh điện để vào trong · kéo để xoay góc nhìn</div>
       <form id="chatForm" class="chat card" autocomplete="off">
         <input id="chatInput" name="chatInput" maxlength="120" placeholder="Nhắn với mọi người trong chùa…" aria-label="Tin nhắn">
@@ -653,11 +655,11 @@ function ensureAudio(){
   if(actx.state==='suspended')actx.resume().catch(()=>{});
   return actx;
 }
-function tone(freq,amp,decay,when,type){
+function tone(freq,amp,decay,when,type,dest){
   const o=actx.createOscillator(),g=actx.createGain();
   o.type=type||'sine';o.frequency.value=freq;
   g.gain.setValueAtTime(0.0001,when);g.gain.linearRampToValueAtTime(amp,when+0.006);g.gain.exponentialRampToValueAtTime(0.0001,when+decay);
-  o.connect(g);g.connect(master);o.start(when);o.stop(when+decay+0.05);return o;
+  o.connect(g);g.connect(dest||master);o.start(when);o.stop(when+decay+0.05);return o;
 }
 function noise(dur,when,amp,freq,q){
   const len=Math.floor(actx.sampleRate*dur),buf=actx.createBuffer(1,len,actx.sampleRate),d=buf.getChannelData(0);
@@ -680,6 +682,49 @@ const sfx={
     for(let i=0;i<3;i++){const f=notes[Math.floor(Math.random()*notes.length)];tone(f,0.035*v,2.4,t+i*0.16+Math.random()*0.08);tone(f*2.76,0.008*v,1.2,t+i*0.16);}}
 };
 let nextChime=8;
+
+/* meditation music: a slow drone, soft breath and pentatonic bells, all generated here */
+const zen={on:false,bus:null,srcs:[],next:0,bowlNext:0};
+const ZEN_NOTES=[293.66,329.63,369.99,440,493.88,587.33,659.25,739.99];
+function zenStart(){
+  if(zen.on||!soundOn||!ensureAudio())return;
+  zen.on=true;const t=actx.currentTime;
+  const bus=actx.createGain();bus.gain.setValueAtTime(0.0001,t);bus.gain.exponentialRampToValueAtTime(0.9,t+5);bus.connect(master);
+  const lp=actx.createBiquadFilter();lp.type='lowpass';lp.frequency.value=950;lp.connect(bus);
+  const srcs=[];
+  [[73.42,'sine',0.07],[110,'triangle',0.03],[146.83,'sine',0.025],[220.5,'sine',0.01]].forEach(([f,type,amp],i)=>{
+    const o=actx.createOscillator();o.type=type;o.frequency.value=f;o.detune.value=(i%2?5:-4);
+    const g=actx.createGain();g.gain.value=amp;
+    const lfo=actx.createOscillator();lfo.frequency.value=0.05+i*0.027;const lg=actx.createGain();lg.gain.value=amp*0.55;
+    lfo.connect(lg);lg.connect(g.gain);o.connect(g);g.connect(lp);o.start(t);lfo.start(t);srcs.push(o,lfo);
+  });
+  const len=actx.sampleRate*4,buf=actx.createBuffer(1,len,actx.sampleRate),d=buf.getChannelData(0);
+  let last=0;for(let i=0;i<len;i++){last=(last+0.02*(Math.random()*2-1))/1.02;d[i]=last*3.2;}
+  const nz=actx.createBufferSource();nz.buffer=buf;nz.loop=true;
+  const nf=actx.createBiquadFilter();nf.type='lowpass';nf.frequency.value=420;
+  const ng=actx.createGain();ng.gain.value=0.05;
+  const nl=actx.createOscillator();nl.frequency.value=0.09;const nlg=actx.createGain();nlg.gain.value=0.04;
+  nl.connect(nlg);nlg.connect(ng.gain);nz.connect(nf);nf.connect(ng);ng.connect(bus);nz.start(t);nl.start(t);srcs.push(nz,nl);
+  zen.bus=bus;zen.srcs=srcs;zen.next=t+2.5;zen.bowlNext=t+1;
+  const n=document.getElementById('zenNote');if(n)n.hidden=false;
+}
+function zenStop(){
+  if(!zen.on)return;zen.on=false;
+  const n=document.getElementById('zenNote');if(n)n.hidden=true;
+  if(!actx||!zen.bus)return;const t=actx.currentTime;
+  zen.bus.gain.cancelScheduledValues(t);zen.bus.gain.setValueAtTime(Math.max(0.0001,zen.bus.gain.value),t);zen.bus.gain.exponentialRampToValueAtTime(0.0001,t+3);
+  zen.srcs.forEach(s=>{try{s.stop(t+3.1);}catch(e){}});zen.bus=null;zen.srcs=[];
+}
+function zenTick(){
+  if(!zen.on||!actx||!zen.bus)return;const t=actx.currentTime;
+  if(t>=zen.next){
+    const f=ZEN_NOTES[Math.floor(Math.random()*ZEN_NOTES.length)];
+    tone(f,0.045,5,t+0.05,'sine',zen.bus);tone(f*2.01,0.012,2.5,t+0.05,'sine',zen.bus);tone(f*0.5,0.02,4,t+0.05,'sine',zen.bus);
+    if(Math.random()<0.45){const f2=ZEN_NOTES[Math.floor(Math.random()*ZEN_NOTES.length)];tone(f2,0.03,4.5,t+0.7+Math.random()*0.6,'sine',zen.bus);}
+    zen.next=t+3.2+Math.random()*4.5;
+  }
+  if(t>=zen.bowlNext){[[1,1,6],[2.71,.3,3.5],[5.15,.1,2]].forEach(([r,a,dd])=>tone(196*r,a*0.07,dd,t+0.05,'sine',zen.bus));zen.bowlNext=t+18+Math.random()*10;}
+}
 
 /* ---------- monks ---------- */
 const skin=m('skin',0xF4D6BC,{roughness:.7}),cheekMat=m('cheek',0xF2A9B4,{roughness:.8}),eyeMat=m('eye',0x3B2A3F,{roughness:.6}),moMat=m('mo',0x8E5634,{roughness:.6}),stickMat=m('stick',0x9C3B3B);
@@ -1100,7 +1145,11 @@ function step(now){
   if(Math.random()<dt*(2.2+burner.glow*10)){const t=burner.tips[Math.floor(Math.random()*3)];puff(t.position.x,t.position.y+0.05,t.position.z,0.22+burner.glow*0.15);}
   updateSmoke(dt);updateLeaves(dt,elapsed);
   if(marker.material.opacity>0){if(!target.on)marker.material.opacity*=Math.exp(-dt*6);marker.scale.setScalar(1+0.1*Math.sin(elapsed*6));}
-  if(entered&&soundOn&&actx){nextChime-=dt;if(nextChime<=0){nextChime=10+Math.random()*10;sfx.chime(0.45);}}
+  const meditating=entered&&me&&me.act&&me.act.a==='thien';
+  if(meditating&&soundOn&&!zen.on)zenStart();
+  if(zen.on&&(!meditating||!soundOn))zenStop();
+  zenTick();
+  if(entered&&soundOn&&actx&&!meditating){nextChime-=dt;if(nextChime<=0){nextChime=10+Math.random()*10;sfx.chime(0.45);}}
   renderer.render(scene,camera);
   requestAnimationFrame(step);
 }
