@@ -762,8 +762,11 @@ async function probeTracks(){
 }
 probeTracks();
 /* YouTube track for meditation (self-hosted site only: the Claude page cannot embed other sites) */
-const YT_TRACKS={thien:{id:'DUnPi83ZO4E',label:'Nhạc Thiền Tâm An Lạc #4 · kênh Thiền An Chữa Lành'}};
-const yt={player:null,ready:false,failed:false,want:false,loading:false,cbs:[]};
+const YT_TRACKS={
+  chua:{id:'vIID6yGa_m0',label:'Tàn Mộng Nhân Gian · kênh TC Muzic',vol:40},
+  thien:{id:'DUnPi83ZO4E',label:'Nhạc Thiền Tâm An Lạc #4 · kênh Thiền An Chữa Lành',vol:65}
+};
+const yt={player:null,ready:false,failed:false,want:false,loading:false,cbs:[],cur:null,pos:{}};
 function ytUsable(mode){return !!window.CBQ_SERVER&&!yt.failed&&!!YT_TRACKS[mode];}
 function ytFail(){yt.failed=true;yt.want=false;const c=document.getElementById('ytCard');if(c)c.hidden=true;music.mode=null;}
 function ytLoadApi(cb){
@@ -775,17 +778,29 @@ function ytLoadApi(cb){
   const sc=document.createElement('script');sc.src='https://www.youtube.com/iframe_api';sc.async=true;sc.onerror=ytFail;document.head.appendChild(sc);
   setTimeout(()=>{if(!(window.YT&&window.YT.Player))ytFail();},12000);
 }
+function ytSwitch(tr){
+  // remember where the previous track was, then continue the new one where it was left
+  try{if(yt.cur&&yt.cur!==tr.id)yt.pos[yt.cur]=yt.player.getCurrentTime()||0;}catch(e){}
+  if(yt.cur!==tr.id){yt.cur=tr.id;yt.player.loadVideoById({videoId:tr.id,startSeconds:yt.pos[tr.id]||0});}
+  yt.player.setVolume(tr.vol);yt.player.playVideo();
+}
 function ytPlay(mode){
-  const tr=YT_TRACKS[mode];yt.want=true;
+  const tr=YT_TRACKS[mode];yt.want=mode;
   const card=document.getElementById('ytCard');card.hidden=false;document.getElementById('ytLabel').textContent=tr.label;
-  if(yt.player){if(yt.ready){yt.player.setVolume(65);yt.player.playVideo();}return;}
+  if(yt.player){if(yt.ready)ytSwitch(tr);return;}
   ytLoadApi(()=>{
     if(yt.player||yt.failed)return;
+    yt.cur=tr.id;
     yt.player=new window.YT.Player('ytPlayer',{width:'100%',height:'100%',videoId:tr.id,
-      playerVars:{autoplay:1,controls:1,playsinline:1,rel:0,loop:1,playlist:tr.id},
-      events:{onReady:e=>{yt.ready=true;e.target.setVolume(65);if(yt.want)e.target.playVideo();else e.target.pauseVideo();},onError:ytFail}});
+      playerVars:{autoplay:1,controls:1,playsinline:1,rel:0},
+      events:{
+        onReady:e=>{yt.ready=true;if(yt.want)ytSwitch(YT_TRACKS[yt.want]);else e.target.pauseVideo();},
+        onStateChange:e=>{if(e.data===0&&yt.want){e.target.seekTo(0);e.target.playVideo();}},
+        onError:ytFail}});
   });
 }
+// load the YouTube player script early so music starts the moment someone enters
+if(window.CBQ_SERVER)ytLoadApi(()=>{});
 function ytPause(){yt.want=false;const c=document.getElementById('ytCard');if(c)c.hidden=true;if(yt.player&&yt.ready){try{yt.player.pauseVideo();}catch(e){}}}
 const music={mode:null,bus:null,srcs:[],next:0,phrase:0,step:0,beat:0,bell:0,file:null,fade:null};
 function musicWanted(){
