@@ -6,7 +6,9 @@ const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 const MAX_PLAYERS = 80;
-const page = fs.readFileSync(path.join(__dirname, 'public', 'index.html'));
+// the page may sit in public/ or next to this file
+const pagePath = [path.join(__dirname, 'public', 'index.html'), path.join(__dirname, 'index.html')].find((p) => fs.existsSync(p));
+const page = fs.readFileSync(pagePath);
 
 const server = http.createServer((req, res) => {
   const url = (req.url || '/').split('?')[0];
